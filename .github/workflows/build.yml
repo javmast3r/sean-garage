@@ -1,0 +1,76 @@
+# path: .github/workflows/build.yml
+name: Build Disks
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      MERLIN32_URL: https://github.com/Apple-Tools/merlin32/releases/latest/download/merlin32-linux
+      AC_URL: https://github.com/AppleCommander/AppleCommander/releases/latest/download/AppleCommander-jar-with-dependencies.jar
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Python deps
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install Pillow
+
+      - name: Fetch Merlin32 (Linux)
+        run: |
+          curl -L "$MERLIN32_URL" -o merlin32
+          chmod +x merlin32
+          ./merlin32 -V || true
+
+      - name: Fetch AppleCommander
+        run: |
+          curl -L "$AC_URL" -o ac.jar
+          java -jar ac.jar -help | head -n 2
+
+      - name: Build with Merlin32 and package disks
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build src tools assets
+
+          # ---- write the tiny Merlin build file
+          cat > build.mer <<'MER'
+          !to    "build/SEANSGAME.bin",plain
+          !src   "src/seans_garage_giveaway.s"
+          MER
+
+          # ---- assemble
+          ./merlin32 build.mer
+
+          # ---- convert PNG -> HGR
+          python3 tools/png2hgr.py assets/title.png build/TITLE.hgr
+
+          # ---- make DOS 3.3 bootable .dsk
+          java -jar ac.jar -dos140 build/SeanGarage.dsk SEANSGAR
+          java -jar ac.jar -p build/SeanGarage.dsk HELLO BAS < assets/HELLO.bas
+          java -jar ac.jar -p build/SeanGarage.dsk SEANSGAME BIN 0x0800 < build/SEANSGAME.bin
+          java -jar ac.jar -p build/SeanGarage.dsk TITLE BIN 0x2000 < build/TITLE.hgr
+
+          # ---- (optional) ProDOS .po if you upload assets/NewDisk.po
+          if [ -f assets/NewDisk.po ]; then
+            cp assets/NewDisk.po build/SeanGarage.po
+            java -jar ac.jar -p build/SeanGarage.po STARTUP BAS < assets/STARTUP.bas
+            java -jar ac.jar -p build/SeanGarage.po SEANSGAME BIN 0x0800 < build/SEANSGAME.bin
+            java -jar ac.jar -p build/SeanGarage.po TITLE BIN 0x2000 < build/TITLE.hgr
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: disks
+          path: build/*.{dsk,po}
