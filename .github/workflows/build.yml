@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      MERLIN32_URL: https://github.com/Apple-Tools/merlin32/releases/latest/download/merlin32-linux
+      # AppleCommander fat JAR (official)
       AC_URL: https://github.com/AppleCommander/AppleCommander/releases/latest/download/AppleCommander-jar-with-dependencies.jar
     steps:
       - name: Checkout
@@ -21,47 +21,57 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Install Python deps
+      - name: Install build tools + Python deps
         run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential make git
           python3 -m pip install --upgrade pip
           python3 -m pip install Pillow
 
-      - name: Fetch Merlin32 (Linux)
+      - name: Build Merlin32 from source (Linux)
         run: |
-          curl -L "$MERLIN32_URL" -o merlin32
-          chmod +x merlin32
-          ./merlin32 -V || true
+          # get Merlin32 source and build it
+          git clone --depth=1 https://github.com/apple2accumulator/merlin32 m32
+          make -C m32/Source
+          # find the compiled binary and place it at ./merlin32
+          MERLIN_BIN="$(find m32 -type f -name merlin32 -perm -111 | head -n1)"
+          if [ -z "$MERLIN_BIN" ]; then
+            echo "Could not find built merlin32 binary"; exit 1
+          fi
+          cp "$MERLIN_BIN" ./merlin32
+          chmod +x ./merlin32
+          ./merlin32 || true
 
       - name: Fetch AppleCommander
         run: |
           curl -L "$AC_URL" -o ac.jar
-          java -jar ac.jar -help | head -n 2
+          java -jar ac.jar -help | head -n 2 || true
 
-      - name: Build with Merlin32 and package disks
+      - name: Build game and package disks
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build src tools assets
 
-          # ---- write the tiny Merlin build file
+          # tiny Merlin build file
           cat > build.mer <<'MER'
           !to    "build/SEANSGAME.bin",plain
           !src   "src/seans_garage_giveaway.s"
           MER
 
-          # ---- assemble
+          # assemble
           ./merlin32 build.mer
 
-          # ---- convert PNG -> HGR
+          # PNG -> HGR
           python3 tools/png2hgr.py assets/title.png build/TITLE.hgr
 
-          # ---- make DOS 3.3 bootable .dsk
+          # DOS 3.3 bootable .dsk
           java -jar ac.jar -dos140 build/SeanGarage.dsk SEANSGAR
           java -jar ac.jar -p build/SeanGarage.dsk HELLO BAS < assets/HELLO.bas
           java -jar ac.jar -p build/SeanGarage.dsk SEANSGAME BIN 0x0800 < build/SEANSGAME.bin
           java -jar ac.jar -p build/SeanGarage.dsk TITLE BIN 0x2000 < build/TITLE.hgr
 
-          # ---- (optional) ProDOS .po if you upload assets/NewDisk.po
+          # ProDOS .po (optional)
           if [ -f assets/NewDisk.po ]; then
             cp assets/NewDisk.po build/SeanGarage.po
             java -jar ac.jar -p build/SeanGarage.po STARTUP BAS < assets/STARTUP.bas
