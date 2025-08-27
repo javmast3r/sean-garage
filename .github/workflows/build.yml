@@ -1,8 +1,9 @@
+# path: .github/workflows/build.yml
 name: Build Disks
 on:
+  workflow_dispatch: {}
   push:
     branches: [ main ]
-  workflow_dispatch: {}
 
 jobs:
   build:
@@ -11,21 +12,280 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up tools (cc65 + Python + Java 21)
+      - name: Install tools (cc65 + Python + Java)
         run: |
           sudo apt-get update
           sudo apt-get install -y cc65 python3-pip
           python3 -m pip install --upgrade pip
           python3 -m pip install Pillow
-          # Download AppleCommander CLI (pinned)
           AC_VERSION=1.11.0
           curl -L "https://github.com/AppleCommander/AppleCommander/releases/download/${AC_VERSION}/AppleCommander-ac-${AC_VERSION}.jar" -o ac.jar
           java -version
           java -jar ac.jar -help | head -n 2 || true
 
-      - name: Prepare folders
+      - name: Create project files if missing (safe defaults)
         run: |
-          mkdir -p build src tools assets cfg
+          set -e
+          mkdir -p cfg src tools assets build
+
+          # --- linker config ($0800 raw BIN) ---
+          if [ ! -f cfg/apple2bin.cfg ]; then
+            cat > cfg/apple2bin.cfg <<'CFG'
+MEMORY {
+  ZP:   start = $0000, size = $0100, type = rw, define = yes;
+  RAM:  start = $0800, size = $7800, type = rw, fill = yes, file = %O;
+}
+SEGMENTS {
+  ZEROPAGE: load = ZP,  type = zp, define = yes;
+  CODE:     load = RAM, type = ro;
+  RODATA:   load = RAM, type = ro;
+  DATA:     load = RAM, type = rw;
+  BSS:      load = RAM, type = bss, define = yes;
+}
+CFG
+          fi
+
+          # --- assembly game (ca65) ---
+          if [ ! -f src/seans_garage_giveaway.s ]; then
+            cat > src/seans_garage_giveaway.s <<'ASM'
+; Apple II (6502) – ca65 source (minimal playable)
+; HGR title + move player with WASD/IJKL; draws a tile.
+
+KBD      = $C000
+KBDSTRB  = $C010
+TXTCLR   = $C050
+HIRES    = $C057
+PAGE2CLR = $C055
+MIXCLR   = $C052
+HOME     = $FC58
+COUT     = $FDED
+HGR1     = $2000
+
+.segment "ZEROPAGE"
+ZP_PTRL: .res 1
+ZP_PTRH: .res 1
+ZP_TMP:  .res 1
+PL_X:    .res 1
+PL_Y:    .res 1
+
+.segment "RODATA"
+TLINE1: .asciiz "SEAN'S GARAGE GIVEAWAY"
+TLINE2: .asciiz "WASD or IJKL to move"
+TLINE3: .asciiz "Press any key to start"
+ROW_LO: .byte <($2000),<($2050),<($20A0),<($20F0),<($2A00),<($2A50),<($2AA0),<($2AF0),<($3400),<($3450),<($34A0),<($34F0)
+ROW_HI: .byte >($2000),>($2050),>($20A0),>($20F0),>($2A00),>($2A50),>($2AA0),>($2AF0),>($3400),>($3450),>($34A0),>($34F0)
+
+.segment "CODE"
+START:
+        jsr INIT
+        jsr SHOW_TITLE
+        jsr WAITKEY
+        jsr INIT_GAME
+MAIN:   jsr INPUT
+        jsr RENDER
+        jmp MAIN
+
+INIT:   bit TXTCLR
+        bit HIRES
+        bit PAGE2CLR
+        bit MIXCLR
+        jsr CLRHGR
+        jsr HOME
+        rts
+
+CLRHGR: lda #<HGR1
+        sta ZP_PTRL
+        lda #>HGR1
+        sta ZP_PTRH
+        lda #$00
+        ldx #$00
+        ldy #$20
+@L:     sta (ZP_PTRL),y
+        iny
+        bne @L
+        inc ZP_PTRH
+        inx
+        cpx #$20
+        bne @L
+        rts
+
+SHOW_TITLE:
+        jsr CLRHGR
+        jsr HOME
+        ldx #$00
+@t1:    lda TLINE1,x
+        beq @nl1
+        jsr COUT
+        inx
+        bne @t1
+@nl1:   lda #$8D
+        jsr COUT
+        ldx #$00
+@t2:    lda TLINE2,x
+        beq @nl2
+        jsr COUT
+        inx
+        bne @t2
+@nl2:   lda #$8D
+        jsr COUT
+        ldx #$00
+@t3:    lda TLINE3,x
+        beq @done
+        jsr COUT
+        inx
+        bne @t3
+@done:  rts
+
+GETKEY: lda KBD
+        bpl @z
+        lda KBD
+        bit KBDSTRB
+        and #$7F
+        rts
+@z:     lda #$00
+        rts
+
+WAITKEY: jsr GETKEY
+        beq WAITKEY
+        rts
+
+INIT_GAME:
+        lda #6
+        sta PL_X
+        sta PL_Y
+        rts
+
+INPUT:  jsr GETKEY
+        beq @d
+        cmp #'W'
+        beq @u
+        cmp #'I'
+        beq @u
+        cmp #'S'
+        beq @dn
+        cmp #'K'
+        beq @dn
+        cmp #'A'
+        beq @l
+        cmp #'J'
+        beq @l
+        cmp #'D'
+        beq @r
+        cmp #'L'
+        beq @r
+        rts
+@u:     lda PL_Y
+        beq @d
+        dec PL_Y
+        rts
+@dn:    lda PL_Y
+        cmp #11
+        beq @d
+        inc PL_Y
+        rts
+@l:     lda PL_X
+        beq @d
+        dec PL_X
+        rts
+@r:     lda PL_X
+        cmp #13
+        beq @d
+        inc PL_X
+        rts
+@d:     rts
+
+RENDER: jsr CLRHGR
+        lda PL_X
+        ldx PL_Y
+        jsr DRAW_PLAYER
+        rts
+
+DRAW_PLAYER:
+        sta ZP_TMP
+        txa
+        tax
+        lda ROW_LO,x
+        sta ZP_PTRL
+        lda ROW_HI,x
+        sta ZP_PTRH
+        ldx ZP_TMP
+        txa
+        asl a
+        clc
+        adc ZP_PTRL
+        sta ZP_PTRL
+        bcc @ok
+        inc ZP_PTRH
+@ok:    ldy #$00
+        lda #$7F
+@ln:    sta (ZP_PTRL),y
+        iny
+        sta (ZP_PTRL),y
+        lda ZP_PTRL
+        clc
+        adc #$80
+        sta ZP_PTRL
+        bcc @nc
+        inc ZP_PTRH
+@nc:    ldy #$00
+        inc ZP_TMP
+        lda ZP_TMP
+        cmp #8
+        bcc @ln
+        lda #$00
+        sta ZP_TMP
+        rts
+ASM
+          fi
+
+          # --- PNG -> HGR converter ---
+          if [ ! -f tools/png2hgr.py ]; then
+            cat > tools/png2hgr.py <<'PY'
+#!/usr/bin/env python3
+from PIL import Image
+import sys
+W,H=280,192
+BASE=0x2000
+
+def row_addr(y): return BASE + (y&7)*0x80 + (y&0x38)*5 + (y&0xC0)*0x28
+
+def main(i,o):
+    img=Image.open(i).convert('L').resize((W,H))
+    data=bytearray(0x2000)
+    for y in range(H):
+        ya=row_addr(y)-BASE
+        for col in range(40):
+            b=0; x0=col*7
+            for bit in range(7):
+                x=x0+bit
+                if x>=W: break
+                if img.getpixel((x,y))<128: b|=(1<<bit)
+            data[ya+col]=b&0x7F
+    open(o,'wb').write(data)
+if __name__=='__main__':
+    if len(sys.argv)!=3: print('Usage: png2hgr.py in.png out.hgr'); sys.exit(1)
+    main(sys.argv[1],sys.argv[2])
+PY
+            chmod +x tools/png2hgr.py
+          fi
+
+          # --- BASIC loaders ---
+          if [ ! -f assets/HELLO.bas ]; then
+            cat > assets/HELLO.bas <<'BAS'
+5 HGR
+10 PRINT CHR$(4);"BLOAD TITLE,A$2000"
+20 GET A$: IF A$="" THEN 20
+30 PRINT CHR$(4);"BRUN SEANSGAME"
+BAS
+          fi
+          if [ ! -f assets/STARTUP.bas ]; then
+            cat > assets/STARTUP.bas <<'BAS'
+5 HGR
+10 PRINT CHR$(4);"BLOAD TITLE,A$2000"
+20 GET A$: IF A$="" THEN 20
+30 PRINT CHR$(4);"BRUN SEANSGAME"
+BAS
+          fi
 
       - name: Create fallback title.png if missing
         run: |
@@ -33,27 +293,28 @@ jobs:
             python3 - << 'PY'
 from PIL import Image, ImageDraw
 img = Image.new('L', (280,192), 255)
-d = ImageDraw.Draw(img)
-d.text((40,80), "SEAN'S GARAGE", fill=0)
-d.text((80,110), "GIVEAWAY", fill=0)
+ImageDraw.Draw(img).text((40,90), "SEAN'S GARAGE\nGIVEAWAY", fill=0)
 img.save('assets/title.png')
 PY
           fi
 
-      - name: Assemble with ca65 + ld65
+      - name: Assemble & package
         run: |
-          # assemble to object
+          set -euo pipefail
+          # assemble and link to raw BIN
           ca65 -t none -o build/game.o src/seans_garage_giveaway.s
-          # link to raw BIN at $0800 using our linker cfg
           ld65 -C cfg/apple2bin.cfg -o build/SEANSGAME.bin build/game.o
+
           # convert PNG -> HGR
           python3 tools/png2hgr.py assets/title.png build/TITLE.hgr
+
           # make DOS 3.3 bootable .dsk
           java -jar ac.jar -dos140 build/SeanGarage.dsk SEANSGAR
           java -jar ac.jar -p build/SeanGarage.dsk HELLO BAS < assets/HELLO.bas
           java -jar ac.jar -p build/SeanGarage.dsk SEANSGAME BIN 0x0800 < build/SEANSGAME.bin
           java -jar ac.jar -p build/SeanGarage.dsk TITLE BIN 0x2000 < build/TITLE.hgr
-          # optional ProDOS .po if you uploaded assets/NewDisk.po
+
+          # optional: ProDOS .po if you uploaded assets/NewDisk.po (must have PRODOS + BASIC.SYSTEM)
           if [ -f assets/NewDisk.po ]; then
             cp assets/NewDisk.po build/SeanGarage.po
             java -jar ac.jar -p build/SeanGarage.po STARTUP BAS < assets/STARTUP.bas
@@ -61,7 +322,7 @@ PY
             java -jar ac.jar -p build/SeanGarage.po TITLE BIN 0x2000 < build/TITLE.hgr
           fi
 
-      - name: Upload artifacts
+      - name: Upload disks
         uses: actions/upload-artifact@v4
         with:
           name: disks
