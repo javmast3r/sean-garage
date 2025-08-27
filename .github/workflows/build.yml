@@ -1,4 +1,4 @@
-name: Build-Disks
+name: Build Disks
 on:
   push:
     branches: [ main ]
