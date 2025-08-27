@@ -12,17 +12,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up tools
+      - name: Set up tools (cc65 + Python + Java 21)
         run: |
           sudo apt-get update
           sudo apt-get install -y cc65 python3-pip
           python3 -m pip install --upgrade pip
           python3 -m pip install Pillow
-          curl -L https://github.com/AppleCommander/AppleCommander/releases/latest/download/AppleCommander-jar-with-dependencies.jar -o ac.jar
+          # Download AppleCommander CLI (pinned)
+          AC_VERSION=1.11.0
+          curl -L "https://github.com/AppleCommander/AppleCommander/releases/download/${AC_VERSION}/AppleCommander-ac-${AC_VERSION}.jar" -o ac.jar
+          # sanity check the jar
+          java -version
+          java -jar ac.jar -help | head -n 2 || true
 
       - name: Prepare folders
         run: |
           mkdir -p build src tools assets cfg
+
+      - name: Create fallback title.png if missing
+        run: |
+          if [ ! -f assets/title.png ]; then
+            python3 - << 'PY'
+from PIL import Image, ImageDraw
+img = Image.new('L', (280,192), 255)
+d = ImageDraw.Draw(img)
+d.text((40,80), "SEAN'S GARAGE", fill=0)
+d.text((80,110), "GIVEAWAY", fill=0)
+img.save('assets/title.png')
+PY
+          fi
 
       - name: Assemble with ca65 + ld65
         run: |
@@ -37,7 +55,7 @@ jobs:
           java -jar ac.jar -p build/SeanGarage.dsk HELLO BAS < assets/HELLO.bas
           java -jar ac.jar -p build/SeanGarage.dsk SEANSGAME BIN 0x0800 < build/SEANSGAME.bin
           java -jar ac.jar -p build/SeanGarage.dsk TITLE BIN 0x2000 < build/TITLE.hgr
-          # optional ProDOS, only if you uploaded assets/NewDisk.po
+          # optional ProDOS .po if you uploaded assets/NewDisk.po
           if [ -f assets/NewDisk.po ]; then
             cp assets/NewDisk.po build/SeanGarage.po
             java -jar ac.jar -p build/SeanGarage.po STARTUP BAS < assets/STARTUP.bas
