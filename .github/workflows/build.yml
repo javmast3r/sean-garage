@@ -1,4 +1,3 @@
-# path: .github/workflows/build.yml
 name: Build Disks
 on:
   push:
@@ -21,7 +20,6 @@ jobs:
           # Download AppleCommander CLI (pinned)
           AC_VERSION=1.11.0
           curl -L "https://github.com/AppleCommander/AppleCommander/releases/download/${AC_VERSION}/AppleCommander-ac-${AC_VERSION}.jar" -o ac.jar
-          # sanity check the jar
           java -version
           java -jar ac.jar -help | head -n 2 || true
 
